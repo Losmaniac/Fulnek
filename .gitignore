@@ -1,0 +1,8 @@
+# raw timetable downloads: over GitHub's 100 MB file limit, and the game doesn't read them
+JDF.zip
+netex.zip
+# build tooling and intermediate output (the playable game is index.html, game.js and data/ at the root)
+source/node_modules/
+source/dist/
+source/raw/
+source/shots*/
