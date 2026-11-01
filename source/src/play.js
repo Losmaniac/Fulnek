@@ -9,6 +9,7 @@ import { createTalk } from "./talk.js";
 import { createAircraft, createCrime } from "./crime.js";
 import { createFleet, createServices } from "./services.js";
 import { createPost } from "./post.js";
+import { createInteriors } from "./interior.js";
 
 const EYE = 1.7, R = 0.35, CELL = 8;
 const fmt = (n, d = 0) => n.toLocaleString("cs-CZ", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -51,8 +52,8 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   };
   const audio = createAudio();
   let veh = null;
-  let crime = null, services = null;
-  const fire = () => crime && overlay.hidden && map.hidden && !talk.isOpen() && !errands.isOpen() && !services.hose(pos) && crime.shoot(veh.st.mode); // a fire hose in hand sprays instead (services.update)
+  let crime = null, services = null, room = null; // room: the building you're inside (interior.js), or null
+  const fire = () => crime && overlay.hidden && map.hidden && !talk.isOpen() && !errands.isOpen() && !room && !services.hose(pos) && crime.shoot(veh.st.mode); // a fire hose in hand sprays instead (services.update)
   const play = () => {
     overlay.hidden = true; map.hidden = true; audio.start();
     try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* drag-to-look still works */ }
@@ -71,21 +72,22 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     if (playing && phone.key(code)) return true;
     if (playing && summary.key(code)) return true;
     if (playing && services.key(code, pos)) return true;
+    if (playing && room && code === "KeyE" && atDoor()) { goOut(); return true; }
     if (playing && !driving && errands.key(code, world.env.st.hour)) return true;
     if (code === "KeyX" && playing && !talk.isOpen() && crime) { crime.toggle(); return true; }
     if (code === "KeyB" && playing && crime) { crime.cycle(); return true; }
     if (/^Digit[1-5]$/.test(code) && playing && crime) { crime.select(Number(code.slice(-1)) - 1); return true; }
     if (code === "KeyR" && playing && crime) { crime.reload(); return true; }
     if (code === "KeyP" && playing) { phone.toggle(); return true; }
-    if (code === "KeyE" && playing && !driving && talk.start(pos)) return true;
-    if (code === "KeyE" && playing) {
+    if (code === "KeyE" && playing && !driving && !room && talk.start(pos)) return true;
+    if (code === "KeyE" && playing && !room) {
       if (driving) { const was = veh.st.mode; if (veh.exit(pos)) { yaw = veh.st.yaw - Math.PI / 2; pitch = 0; nearWalls = hashSegments(segs, 5, CELL); toast(was === "car" ? "Parked" : "Bike left here", "E to get back on"); } else toast("Too fast", "Stop first, then E"); }
-      else { if (fly && flightModel) world.scene.remove(flightModel.group); flightModel = null; fly = false; const m = veh.enter(pos); if (m) { orbit.yaw = orbit.pitch = 0; if (m === "car") crime.carjacked(); if (m === "service") toast(veh.st.svc.name, "W/S · A/D steer · L blue lights and siren · C camera · E get out"); else toast(m === "car" ? "Driving" : "Cycling", m === "car" ? "W/S throttle and brake · A/D steer · Space handbrake · C camera · H horn · E get out" : "W pedal · S brake · A/D steer · E get off"); } }
+      else { if (fly && flightModel) world.scene.remove(flightModel.group); flightModel = null; fly = false; const m = veh.enter(pos); if (m) { orbit.yaw = orbit.pitch = 0; if (m === "car") crime.carjacked(); if (m === "service") toast(veh.st.svc.name, "W/S · A/D steer · L blue lights and siren · C camera · E get out"); else toast(m === "car" ? "Driving" : "Cycling", m === "car" ? "W/S throttle and brake · A/D steer · Space handbrake · C camera · H horn · E get out" : "W pedal · S brake · A/D steer · E get off"); } else if (onGround) { const e = interiors.near(pos, yaw); if (e) goIn(e); } }
       return true;
     }
     if (driving && code === "KeyC") { veh.toggleCam(); return true; }
     if (driving && code === "KeyH") { audio.horn(); return true; }
-    if (code === "KeyF" && !driving) { fly = !fly; vel.set(0, 0, 0); if (fly) { flightType = "helicopter"; flightModel = createAircraft(flightType); world.scene.add(flightModel.group); toast("Helicopter", "WASD fly · Space climb · C descend · J jet · H helicopter · F land"); } else { if (flightModel) world.scene.remove(flightModel.group); flightModel = null; } }
+    if (code === "KeyF" && !driving && !room) { fly = !fly; vel.set(0, 0, 0); if (fly) { flightType = "helicopter"; flightModel = createAircraft(flightType); world.scene.add(flightModel.group); toast("Helicopter", "WASD fly · Space climb · C descend · J jet · H helicopter · F land"); } else { if (flightModel) world.scene.remove(flightModel.group); flightModel = null; } }
     if (fly && (code === "KeyJ" || code === "KeyH")) { const next = code === "KeyJ" ? "jet" : "helicopter"; if (next !== flightType) { if (flightModel) world.scene.remove(flightModel.group); flightType = next; flightModel = createAircraft(flightType); world.scene.add(flightModel.group); toast(flightType === "jet" ? "Jet" : "Helicopter", flightType === "jet" ? "WASD fly fast · Space climb · C descend · H helicopter · F land" : "WASD fly · Space climb · C descend · J jet · F land"); } }
     if (code === "KeyM") toggleMap();
     if (code === "KeyT") world.env.skipHour();
@@ -261,18 +263,19 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   });
   for (const [id, f] of [["mapin", 1.6], ["mapout", 0.625]]) $(id).addEventListener("click", () => { view.zoom = Math.min(16, Math.max(1, view.zoom * f)); drawBig(); });
   $("closemap").addEventListener("click", play);
-  const teleport = (x, z, y) => { if (veh && veh.st.mode !== "walk") { veh.st.v = 0; veh.exit(pos); nearWalls = hashSegments(segs, 5, CELL); } pos.set(Math.min(Math.max(x, W + 3), E - 3), 0, Math.min(Math.max(z, N + 3), S - 3)); pos.y = y ?? groundAt(pos.x, pos.z); vel.set(0, 0, 0); };
+  const teleport = (x, z, y) => { if (room) { room.dispose(); room = null; } if (veh && veh.st.mode !== "walk") { veh.st.v = 0; veh.exit(pos); nearWalls = hashSegments(segs, 5, CELL); } pos.set(Math.min(Math.max(x, W + 3), E - 3), 0, Math.min(Math.max(z, N + 3), S - 3)); pos.y = y ?? groundAt(pos.x, pos.z); vel.set(0, 0, 0); };
 
   // ---- simulation
   const collide = () => {
     const out = ([qx, qz], r) => { const dx = pos.x - qx, dz = pos.z - qz, d = Math.hypot(dx, dz); if (d < r && d > 1e-6) { pos.x += (dx / d) * (r - d); pos.z += (dz / d) * (r - d); } };
     for (let it = 0; it < 2; it++) {
-      nearWalls(pos.x, pos.z, (s) => {
+      const sg = room ? room.segs : segs;
+      (room ? room.near : nearWalls)(pos.x, pos.z, (s) => {
         const o = s * 5;
-        if (pos.y + 0.3 > segs[o + 4]) return; // above this roof
-        out(closest(pos.x, pos.z, segs[o], segs[o + 1], segs[o + 2], segs[o + 3]), R);
+        if (pos.y + 0.3 > sg[o + 4]) return; // above this roof
+        out(closest(pos.x, pos.z, sg[o], sg[o + 1], sg[o + 2], sg[o + 3]), R);
       });
-      for (const a of world.cars.agentPos) if (pos.y > a[6] - 1 && pos.y < a[6] + 2.5) out(closest(pos.x, pos.z, a[0] - a[3] * a[5], a[1] - a[4] * a[5], a[0] + a[3] * a[5], a[1] + a[4] * a[5]), R + a[2]); // moving traffic
+      if (!room) for (const a of world.cars.agentPos) if (pos.y > a[6] - 1 && pos.y < a[6] + 2.5) out(closest(pos.x, pos.z, a[0] - a[3] * a[5], a[1] - a[4] * a[5], a[0] + a[3] * a[5], a[1] + a[4] * a[5]), R + a[2]); // moving traffic
     }
   };
   const fwd = new THREE.Vector3(), right = new THREE.Vector3(), wish = new THREE.Vector3();
@@ -301,7 +304,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
       vel.y -= 22 * dt;
       if (keys.Space && onGround) { vel.y = 6.2; onGround = false; }
       pos.y += vel.y * dt;
-      const g = groundAt(pos.x, pos.z);
+      const g = room ? room.y : groundAt(pos.x, pos.z); // indoors: the ground floor is flat
       if (pos.y <= g || (onGround && vel.y <= 0 && pos.y - g < 0.6)) { pos.y = g; vel.y = 0; onGround = true; } else onGround = false;
     }
     pos.x = Math.min(Math.max(pos.x, W + 3), E - 3); pos.z = Math.min(Math.max(pos.z, N + 3), S - 3);
@@ -310,7 +313,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   // ---- HUD text, a few times per second
   const street = $("street"), coords = $("coords"), fpsEl = $("fps"), speedo = $("speedo");
   let hudT = 0, frames = 0, fpsT = performance.now();
-  const autoQ = { t: 0, n: 0, t0: 0 };
+  const autoQ = { t: 0, d: [] }; // d: raw frame times; the median ignores one-off shader-compile stalls
   const hud = () => {
     let best = 20, name = "";
     nearRoads(pos.x, pos.z, (s) => { const o = s * 4, [qx, qz] = closest(pos.x, pos.z, named[o], named[o + 1], named[o + 2], named[o + 3]), d = Math.hypot(pos.x - qx, pos.z - qz); if (d < best) { best = d; name = city.roads[namedIdx[s]].n; } });
@@ -325,6 +328,11 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   world.scene.add(camera); // the bike's handlebars ride along as a child of the camera
   const fleet = createFleet({ city, scene: world.scene, groundAt, agentPos: world.cars.agentPos, parked: world.cars.parked });
   const post = createPost({ renderer, world, camera });
+  // ---- inside buildings: the room replaces the town on screen and in collisions while you're in it
+  const interiors = createInteriors(city);
+  const atDoor = () => room && Math.hypot(pos.x - room.start.x, pos.z - room.start.z) < 1.3;
+  const goIn = (e) => { room = interiors.build(e); room.near = hashSegments(room.segs, 5, CELL); pos.set(room.start.x, room.y, room.start.z); vel.set(0, 0, 0); yaw = room.yawIn; pitch = 0; toast("Inside", "E at the door to go back out"); };
+  const goOut = () => { const r = room; room = null; r.dispose(); pos.set(r.out.x, groundAt(r.out.x, r.out.z), r.out.z); vel.set(0, 0, 0); yaw = r.yawOut; pitch = 0; };
   veh = createVehicles({ world, city, groundAt, camera, scene: world.scene, audio, fleet });
   world.env.onThunder = (pw) => audio.thunder(pw);
   const undiscovered = (x, z) => { let best = null, bd = Infinity; for (const sp of spots) if (sp.real && !found.has(sp.n)) { const d = Math.hypot(sp.x - x, sp.z - z); if (d < bd && d > 30) { bd = d; best = sp; } } return best; };
@@ -402,7 +410,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   })();
   let last = performance.now();
   const frame = (now) => {
-    const dt = Math.max(0, Math.min((now - last) / 1000, 0.05)); last = now; // rAF can report a time before startPlay
+    const raw = now - last, dt = Math.max(0, Math.min(raw / 1000, 0.05)); last = now; // rAF can report a time before startPlay
     const playing = overlay.hidden && map.hidden;
     if (playing) { const ox = pos.x, oz = pos.z; step(dt); if (!fly) dist[veh.st.mode] += Math.min(50, Math.hypot(pos.x - ox, pos.z - oz)); }
     if (playing && firing) fire();
@@ -417,7 +425,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
       const fx = -Math.sin(yaw), fz = -Math.cos(yaw); camera.position.set(pos.x - fx * (flightType === "jet" ? 18 : 14), pos.y + (flightType === "jet" ? 7 : 6), pos.z - fz * (flightType === "jet" ? 18 : 14)); camera.lookAt(pos.x + fx * 14, pos.y + 1.5, pos.z + fz * 14);
     } else if (!veh.view(dt, uniforms.uNight.value, orbit.yaw, orbit.pitch)) { camera.position.set(pos.x, pos.y + EYE, pos.z); camera.rotation.set(pitch, yaw, 0, "YXZ"); }
     world.update(dt, camera.position, pos, now / 1000);
-    post.render(dt);
+    if (room) { room.update(pos); camera.updateMatrixWorld(); renderer.render(room.scene, camera); } else post.render(dt); // the camera's parent is the town scene: update it by hand
     drawMini();
     if ((hudT += dt) > 0.25) {
       hudT = 0; hud(); discover(); errands.update(pos, world.env.st.hour, world.env.st.day);
@@ -427,7 +435,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
       const sh = services.hint(pos);
       if (sh) { hint.hidden = false; hint.textContent = sh; }
       else if (driving || talk.isOpen()) hint.hidden = true;
-      else if (hint.hidden && !errands.isOpen()) { const nm = talk.nearName(pos), h = nm ? `E · talk to ${nm}` : veh.nearHint(pos); hint.hidden = !h; hint.textContent = h; }
+      else if (hint.hidden && !errands.isOpen()) { const nm = !room && talk.nearName(pos), h = room ? (atDoor() ? "E · go outside" : "") : nm ? `E · talk to ${nm}` : veh.nearHint(pos) || (onGround && !fly && interiors.near(pos, yaw) ? "E · go inside" : ""); hint.hidden = !h; hint.textContent = h; }
       const tEl = $("target");
       if (target) {
         const d = Math.hypot(target.x - pos.x, target.z - pos.z), b = ((Math.atan2(target.x - pos.x, -(target.z - pos.z)) * 180) / Math.PI + 360) % 360;
@@ -439,9 +447,8 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     }
     if (toastT > 0 && (toastT -= dt) <= 0) toastEl.hidden = true;
     if (playing && autoQ.t < 6) { // first seconds of play: if the machine struggles, step the graphics down once
-      autoQ.t += dt; autoQ.n++;
-      if (autoQ.t >= 6) { const fps = autoQ.n / ((now - autoQ.t0) / 1000); if (fps < 24 && world.quality() !== "low") { world.setQuality(QUALITY[Math.max(0, QUALITY.indexOf(world.quality()) - 1)]); toast("Graphics", `Lowered to ${world.quality()} for smoother play · G to change`); } }
-      else if (autoQ.n === 1) autoQ.t0 = now;
+      autoQ.t += dt; autoQ.d.push(raw);
+      if (autoQ.t >= 6) { const fps = 1000 / autoQ.d.sort((a, b) => a - b)[autoQ.d.length >> 1]; if (fps < 24 && world.quality() !== "low") { world.setQuality(QUALITY[Math.max(0, QUALITY.indexOf(world.quality()) - 1)]); toast("Graphics", `Lowered to ${world.quality()} for smoother play · G to change`); } }
     }
     frames++; if (now - fpsT >= 1000) { fpsEl.textContent = `${Math.round((frames * 1000) / (now - fpsT))} fps · ${world.quality()} quality (G)`; frames = 0; fpsT = now; } // wall-clock, not the clamped dt
     requestAnimationFrame(frame);
@@ -449,5 +456,5 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   requestAnimationFrame(frame);
   hud();
   // test hook: place the camera without input devices
-  window.__fulnek = { world, renderer, teleport, pose: (x, z, yw, pt, y, f = false) => { teleport(x, z, y); yaw = yw; pitch = pt; fly = f; }, state: () => ({ x: pos.x, y: pos.y, z: pos.z, yaw, pitch, fly, mode: veh.st.mode }), press, keys, veh, crime, services, post, talk, phone, summary, errands, setTarget, sim: (sec) => { for (let t = 0; t < sec; t += 1 / 60) step(1 / 60); } };
+  window.__fulnek = { world, renderer, teleport, pose: (x, z, yw, pt, y, f = false) => { teleport(x, z, y); yaw = yw; pitch = pt; fly = f; }, state: () => ({ x: pos.x, y: pos.y, z: pos.z, yaw, pitch, fly, mode: veh.st.mode }), press, keys, veh, crime, services, post, room: () => room, interiors, goIn, talk, phone, summary, errands, setTarget, sim: (sec) => { for (let t = 0; t < sec; t += 1 / 60) step(1 / 60); } };
 }

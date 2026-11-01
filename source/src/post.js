@@ -35,7 +35,7 @@ export function createPost({ renderer, world, camera }) {
 
   // cascaded shadows. CSM needs every lit material set up (otherwise its three lights would all add up on it),
   // and it replaces onBeforeCompile, so the town's own shader patches are chained back on and undone when leaving high.
-  let csm = null, wrapT = 0;
+  let csm = null;
   const saved = new Map(); // material -> [onBeforeCompile, own customProgramCacheKey or null]
   const wrap = (m) => {
     if (saved.has(m) || !(m.isMeshLambertMaterial || m.isMeshStandardMaterial || m.isMeshPhongMaterial)) return;
@@ -47,7 +47,15 @@ export function createPost({ renderer, world, camera }) {
     m.customProgramCacheKey = () => key + "|csm";
     m.needsUpdate = true;
   };
-  const wrapAll = () => scene.traverse((o) => { if (o.isMesh || o.isInstancedMesh) for (const m of [].concat(o.material)) wrap(m); });
+  const wrapTree = (root) => root.traverse((o) => { if (o.isMesh) for (const m of [].concat(o.material)) wrap(m); }), wrapAll = () => wrapTree(scene);
+  scene.addEventListener("childadded", (e) => { if (csm) wrapTree(e.child); }); // before its first frame: a late wrap compiles every new material twice
+  // compile every material now, hidden ones too (weapons, flames, the patient...), so nothing stalls the game the first time it shows up
+  const warm = () => {
+    const hidden = []; scene.traverse((o) => { if (!o.visible && !o.isLight) { hidden.push(o); o.visible = true; } }); // lights stay as they are: they pick the shader variant
+    renderer.compile(scene, camera);
+    for (const o of hidden) o.visible = false;
+  };
+  let warmedCsm = null;
   let csmQ = null;
   const fit = (q) => { // reach and map size for a quality; switching medium <-> high must not recompile every material in town
     csmQ = q; csm.maxFar = CASCADES[q][0];
@@ -75,11 +83,11 @@ export function createPost({ renderer, world, camera }) {
     const q = world.quality(), want = CASCADES[q] ? q : null;
     if (q !== "low" && (envT -= dt) <= 0) { envT = 2; refreshEnv(); }
     if (want !== csmQ) { if (!want) csmOff(); else if (csm) fit(want); else csmOn(want); }
+    if (warmedCsm !== !!csm) { warmedCsm = !!csm; warm(); } // first frame (behind the start screen) and after shadows switch on or off
     renderer.getSize(size);
     const resized = !size.equals(last); last.copy(size);
     if (csm) {
       if (resized) csm.updateFrustums();
-      if ((wrapT -= dt) <= 0) { wrapT = 1; wrapAll(); } // materials made later (aircraft, effects)
       csm.lightDirection.copy(env.st.lightDir).negate();
       for (const l of csm.lights) { l.intensity = sun.intensity; l.color.copy(sun.color); }
       camera.updateMatrixWorld(); csm.update(); // cascades fit this frame's view

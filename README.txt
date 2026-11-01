@@ -8,6 +8,9 @@ Controls on foot
                     Space / C  climb / descend while flying; jet is faster
   E                 enter a shop (1-4 buy) · talk to the person in front of you (1-4 answer)
                     · get into the parked car or onto the bike next to you
+                    · walk into any building: face its wall (or front door) and press E; E at the door to leave.
+                      Ground floors are built from the real footprint with rooms and random furniture by the
+                      building's use (homes, offices and shops, halls, garages), the same each visit
   P                 phone: tasks (1-9 guides you there), forecast, places, today's stats
   M                 map: scroll to zoom (house numbers from 6x), drag to move, click to go there
   T                 +1 hour        Y  next weather        G  graphics quality (low/medium/high)

@@ -42,9 +42,8 @@ function weaponModel(camera, cfg, index) {
   if (index !== 4) put(new THREE.BoxGeometry(0.035, 0.045, 0.07), dark, 0, 0.095, -0.08);
   const flash = new THREE.Mesh(new THREE.SphereGeometry(index === 4 ? 0.18 : 0.075, 8, 6), new THREE.MeshBasicMaterial({ color: index === 4 ? 0xff6b26 : 0xffc15c }));
   flash.position.set(0, 0.005, index === 4 ? -0.79 : -0.36); flash.visible = false; root.add(flash);
-  const light = new THREE.PointLight(0xffa536, 0, 6); light.position.copy(flash.position); root.add(light);
   root.position.set(0.28, -0.25, -0.52); root.rotation.set(-0.04, -0.04, 0); camera.add(root);
-  return { root, flash, light };
+  return { root, flash };
 }
 
 function officer() {
@@ -69,7 +68,6 @@ export function createAircraft(kind) {
     put(new THREE.BoxGeometry(1.3, 0.1, 0.65), body, 0, 0.13, 4.4); put(new THREE.SphereGeometry(0.14, 8, 6), red, 0, 0.55, 4.4);
     const rotor = new THREE.Group(); rotor.position.y = 0.9; group.add(rotor); for (let i = 0; i < 4; i++) { const blade = put(new THREE.BoxGeometry(0.24, 0.035, 7.6), black, 0, 0, 0, rotor); blade.rotation.y = i * Math.PI / 2; }
     const tailRotor = new THREE.Group(); tailRotor.position.set(0, 0.22, 4.45); group.add(tailRotor); for (let i = 0; i < 3; i++) { const blade = put(new THREE.BoxGeometry(0.09, 1.35, 0.12), black, 0, 0, 0, tailRotor); blade.rotation.z = i * Math.PI / 3; }
-    const spotlight = new THREE.SpotLight(0xfff1cf, 32, 70, Math.PI / 8, 0.65); spotlight.position.set(0, -0.15, -0.7); spotlight.target.position.set(0, -8, -14); group.add(spotlight, spotlight.target);
     return { group, rotors: [rotor, tailRotor] };
   }
   put(new THREE.ConeGeometry(0.82, 6.4, 8).rotateX(-Math.PI / 2), body, 0, 0, 0);
@@ -81,6 +79,9 @@ export function createAircraft(kind) {
 export function createCrime({ camera, scene, people, groundAt, wantedEl, weaponEl, toast, audio, onArrest }) {
   const guns = LOADOUT.map((w, i) => weaponModel(camera, w, i)), ray = new THREE.Raycaster(), direction = new THREE.Vector3(), origin = new THREE.Vector3(), right = new THREE.Vector3(), up = new THREE.Vector3();
   const ammo = LOADOUT.map((w) => w.clip), reserves = LOADOUT.map((w) => w.reserve), units = [], traces = [], particles = [], effects = [];
+  // the police helicopter's searchlight lives here for good: adding a light later would recompile every material in town
+  const search = new THREE.SpotLight(0xfff1cf, 0, 70, Math.PI / 8, 0.65); scene.add(search, search.target);
+  const muzzle = new THREE.PointLight(0xffa536, 0, 6); camera.add(muzzle); // one shared flash light, always in the scene for the same reason
   let walls = [null, null]; // nearWalls and segs from the last update
   const clear = (a, b) => { const d = b.clone().sub(a), L = d.length(); return L < 1e-3 || wallAt(walls[0], walls[1], a, d.divideScalar(L), L) >= L; };
   let equipped = false, selected = 0, wanted = 0, shots = 0, cooldown = 0, flashT = 0, dispatchT = 0, escaped = false, escapeT = 0, heli = null, jet = null, jetT = 0, aircraftTime = 0, dryWeapon = -1;
@@ -113,7 +114,7 @@ export function createCrime({ camera, scene, people, groundAt, wantedEl, weaponE
     if (!equipped || mode !== "walk" || cooldown > 0) return false;
     const w = LOADOUT[selected], gun = selectedGun();
     if (ammo[selected] <= 0) { if (dryWeapon !== selected) { toast(`${w.name} empty`, "Press R to reload"); dryWeapon = selected; } return false; }
-    ammo[selected]--; shots++; cooldown = w.delay; flashT = w.explosive ? 0.15 : 0.075; gun.flash.visible = true; gun.light.intensity = w.explosive ? 7 : 3.5; audio.gunshot(w.name);
+    ammo[selected]--; shots++; cooldown = w.delay; flashT = w.explosive ? 0.15 : 0.075; gun.flash.visible = true; muzzle.position.copy(gun.flash.position).add(gun.root.position); muzzle.intensity = w.explosive ? 7 : 3.5; audio.gunshot(w.name);
     camera.updateMatrixWorld(true); camera.getWorldPosition(origin); camera.getWorldDirection(direction); camera.getWorldDirection(up); up.crossVectors(direction, new THREE.Vector3(1, 0, 0)).normalize(); right.crossVectors(direction, up).normalize();
     const targets = [...people.humans, ...units.map((u) => u.group)], hitUnits = new Set(), hitPeople = new Set(); let rocketHit = null;
     for (let n = 0; n < w.rays; n++) {
@@ -145,7 +146,7 @@ export function createCrime({ camera, scene, people, groundAt, wantedEl, weaponE
   const update = (dt, pos, yaw, mode, nearWalls, segs, car = null, traffic = []) => {
     walls = [nearWalls, segs];
     cooldown = Math.max(0, cooldown - dt); dispatchT -= dt; aircraftTime += dt;
-    if ((flashT -= dt) <= 0) for (const g of guns) { g.flash.visible = false; g.light.intensity = 0; }
+    if ((flashT -= dt) <= 0) { for (const g of guns) g.flash.visible = false; muzzle.intensity = 0; }
     for (let i = traces.length - 1; i >= 0; i--) { const tr = traces[i]; tr.t -= dt; tr.line.material.opacity = Math.max(0, tr.t / 0.11); if (tr.t <= 0) { scene.remove(tr.line); tr.line.geometry.dispose(); tr.line.material.dispose(); traces.splice(i, 1); } }
     for (let i = particles.length - 1; i >= 0; i--) { const p = particles[i]; p.t -= dt; p.v.y -= 7 * dt; p.mesh.position.addScaledVector(p.v, dt); p.mesh.material.opacity = Math.max(0, p.t / 1.1); if (p.t <= 0) { scene.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); particles.splice(i, 1); } }
     for (let i = effects.length - 1; i >= 0; i--) { const e = effects[i]; e.t -= dt; e.mesh.scale.setScalar(0.3 + (1 - e.t / e.life) * 9); e.mesh.material.opacity = Math.max(0, e.t / e.life) * 0.72; if (e.t <= 0) { scene.remove(e.mesh); e.mesh.geometry.dispose(); e.mesh.material.dispose(); effects.splice(i, 1); } }
@@ -174,7 +175,8 @@ export function createCrime({ camera, scene, people, groundAt, wantedEl, weaponE
       if (!heli) { heli = createAircraft("helicopter"); scene.add(heli.group); }
       const a = aircraftTime * 0.19, hx = pos.x + Math.cos(a) * 36, hz = pos.z + Math.sin(a) * 36;
       heli.group.position.set(hx, Math.max(pos.y + 19, groundAt(hx, hz) + 22), hz); heli.group.rotation.y = -a + Math.PI / 2; heli.rotors.forEach((r, i) => { r.rotation.y += dt * (i ? 22 : 34); });
-    } else if (heli) { scene.remove(heli.group); heli = null; }
+      search.intensity = 32; search.position.copy(heli.group.position).y -= 0.4; search.target.position.set(pos.x, pos.y, pos.z); // the searchlight is on you
+    } else if (heli) { scene.remove(heli.group); heli = null; search.intensity = 0; }
     if (wanted >= 5) {
       jetT -= dt;
       if (!jet && jetT <= 0) { jet = createAircraft("jet"); scene.add(jet.group); jet.group.position.set(pos.x - 120, pos.y + 38, pos.z - 90); jetT = 19; }
