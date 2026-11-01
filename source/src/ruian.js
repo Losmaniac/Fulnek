@@ -30,6 +30,30 @@ const r2 = (v) => Math.round(v * 100) / 100;
 const segDist = (x, z, ax, az, bx, bz) => { const vx = bx - ax, vz = bz - az, L = vx * vx + vz * vz || 1, t = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / L)); return [Math.hypot(x - ax - t * vx, z - az - t * vz), ax + t * vx, az + t * vz]; };
 const key = (a) => a.split(",")[0].trim().toLowerCase();
 
+// Villages are far less completely mapped in OSM than the town: every registered building whose centre no OSM building covers
+// joins the OSM data as a plain footprint (with its registered floors), so the rest of the bake treats it like any other.
+export function ruianFootprints(osm, R) {
+  const key = (p) => [Math.round((p[0] - osm.lon0) * 1e6), Math.round((p[1] - osm.lat0) * 1e6)]; // the bundle's µ-degree frame
+  const dec = (f) => { const out = []; let x = 0, y = 0; for (let k = 0; k < f.length; k += 2) { x += f[k]; y += f[k + 1]; out.push([x, y]); } return out; };
+  const rings = [];
+  for (const [t, , tags, g] of osm.els) if (tags.building || tags["building:part"]) {
+    if (t === "w") rings.push(dec(g)); else if (t === "r") for (const [role, f] of g) if (role !== "inner") rings.push(dec(f));
+  }
+  const box = (r) => r.reduce((b, [x, y]) => [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)], [Infinity, Infinity, -Infinity, -Infinity]);
+  const boxes = rings.map(box), covered = (x, y) => rings.some((r, i) => { const b = boxes[i]; return x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3] && inside(x, y, r); });
+  let added = 0;
+  for (const s of R.so) {
+    const ring = s[12]?.[0]; if (!ring || ring.length < 4) continue;
+    const pts = ring.map(key), n = pts.length - 1, c = pts.slice(0, n).reduce((m, p) => [m[0] + p[0] / n, m[1] + p[1] / n], [0, 0]);
+    if (covered(c[0], c[1])) continue;
+    const flat = []; let px = 0, py = 0;
+    for (const [x, y] of pts) { flat.push(x - px, y - py); px = x; py = y; }
+    osm.els.push(["w", -s[0], { building: "yes", ...(s[7] ? { "building:levels": String(s[7]) } : {}), source: "RÚIAN" }, flat]);
+    added++;
+  }
+  return added;
+}
+
 export function applyRuian(city, R, P, ground) {
   const B = city.buildings, xz = ([lon, lat]) => [P.x(lon), P.z(lat)];
   const containing = (x, z) => { for (let i = 0; i < B.length; i++) if (inside(x, z, B[i].r[0])) return i; return -1; };

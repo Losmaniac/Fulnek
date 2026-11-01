@@ -64,11 +64,20 @@ What's real
   Shops and businesses: 41 real ones with their registered address (firmy.cz listings,
   October 2026), placed on their building. What they sell in the game is a typical basket
   for that kind of shop at game prices and game opening hours, not the shop's real offer.
+  The map reaches 10 km around the square (Odry, Bílovec, Suchdol nad Odrou and the villages
+  between) in map tiles of about 2.7 x 2.1 km that load as you approach and unload behind you;
+  beyond them a coarse model of the land (40 m terrain, 7 m/px photo) fills the horizon.
+  Outside Fulnek the aerial photo is 1 m/px, and buildings missing from OpenStreetMap are
+  taken from RÚIAN footprints. Street life (traffic, people) moves within about 1 km of you.
 
 Rebuild (source folder, needs Node 18+ and Python 3 with Pillow):
   cd source && npm install && BUNDLE=../fulnek-data.bin sh build.sh
   It reads the raw downloads in fulnek-data.bin (and ruian.json.gz next to it, if present)
   and writes the playable game to source/dist/. FAST=1 sh build.sh rebuilds only the code.
+  The 10 km map: node tiles.mjs 10 downloads every tile (ČÚZK, OpenStreetMap, RÚIAN; kept in
+  source/raw/tiles, ~15 MB each, resumable) and bakes it into source/dist/data/tiles/;
+  node overview.mjs 10 makes the distant landscape. Copy source/dist/data/ next to index.html.
+  node fetch.mjs <i> <j> <out.bin> fetches one tile: (0,0) is Fulnek, (1,0) the one east of it.
 
 Credits: Map data © OpenStreetMap contributors (ODbL). Terrain, surface model, orthophoto and
 RÚIAN addresses © ČÚZK (CC BY 4.0). Business names and addresses: firmy.cz listings.

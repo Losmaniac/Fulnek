@@ -1,8 +1,9 @@
-// Bake-time: raw OSM + ČÚZK grids -> game-ready city. Local metres: x = east, z = south, origin = bbox centre.
+// Bake-time: raw OSM + ČÚZK grids -> game-ready city. Local metres: x = east, z = south, origin = centre of the Fulnek box
+// (BBOX) for every map tile, so neighbouring tiles share one coordinate system.
 export const BBOX = { W: 17.885, E: 17.922, S: 49.703, N: 49.722 };
 
-export function projection(b = BBOX) {
-  const lat0 = (b.S + b.N) / 2, lon0 = (b.W + b.E) / 2;
+export function projection(b = BBOX) { // b: the tile whose bounds W/E/N/S are returned
+  const lat0 = (BBOX.S + BBOX.N) / 2, lon0 = (BBOX.W + BBOX.E) / 2;
   const a = 6378137, e2 = 0.00669437999014, phi = (lat0 * Math.PI) / 180;
   const w = 1 - e2 * Math.sin(phi) ** 2;
   const mx = ((a / Math.sqrt(w)) * Math.cos(phi) * Math.PI) / 180; // m per degree lon
@@ -120,8 +121,8 @@ export const ROAD = {
 const SURF = { asphalt: "asphalt", paved: "asphalt", concrete: "asphalt", "concrete:plates": "asphalt", sett: "sett", cobblestone: "sett", unhewn_cobblestone: "sett", paving_stones: "pavers", gravel: "gravel", fine_gravel: "gravel", compacted: "gravel", dirt: "gravel", ground: "gravel", unpaved: "gravel", grass: "gravel" };
 const POI_AMENITY = new Set(["place_of_worship", "townhall", "library", "museum", "theatre", "school"]);
 
-export function buildCity({ osm, dmr, dmp, gw, gh, ext, ortho }) {
-  const P = projection();
+export function buildCity({ osm, dmr, dmp, gw, gh, ext, ortho, bbox = BBOX }) {
+  const P = projection(bbox);
   const R = raster(dmr, gw, gh, ext, P), D = raster(dmp, gw, gh, ext, P);
 
   // terrain mesh grid, ~4 m, nodes exactly on the bbox edges
@@ -359,7 +360,7 @@ export function buildCity({ osm, dmr, dmp, gw, gh, ext, ortho }) {
     });
   });
 
-  const sq0 = () => { const sq = roads.filter((r) => r.n && /(nám\.|náměstí).*komensk/i.test(r.n)).flatMap((r) => r.p); return sq.length ? mean(sq) : [0, 0]; };
+  const sq0 = () => { const sq = roads.filter((r) => r.n && /(nám\.|náměstí).*komensk/i.test(r.n)).flatMap((r) => r.p); return sq.length ? mean(sq) : null; }; // Fulnek's square, if in this tile
   // ---- named places from OSM get a sign on the nearest facade; the square's ground floors get generic shop signs
   const KIND = { cafe: "café", restaurant: "restaurant", townhall: "town hall", post_office: "post office", fire_station: "fire station", museum: "museum", information: "tourist information", pharmacy: "pharmacy", police: "police", bank: "bank", fuel: "petrol station", hotel: "hotel", doctors: "doctor", confectionery: "confectionery" };
   const places = [];
@@ -387,9 +388,9 @@ export function buildCity({ osm, dmr, dmp, gw, gh, ext, ortho }) {
     if (w && !places.some((p) => p.n === name)) sign(name, k, w, true);
   }
   const GENERIC = [["Pekárna", "bakery"], ["Potraviny", "grocery"], ["Řeznictví", "butcher"], ["Trafika", "newsagent"], ["Květiny", "florist"], ["Kadeřnictví", "hairdresser"], ["Hospoda", "pub"], ["Papírnictví", "stationery"], ["Železářství", "hardware"], ["Optika", "optician"], ["Cukrárna", "sweet shop"], ["Drogerie", "chemist"]];
-  const sqx = sq0()[0], sqz = sq0()[1];
+  const [sqx, sqz] = sq0() || [NaN, NaN];
   const fronts = [];
-  buildings.forEach((B) => {
+  if (sq0()) buildings.forEach((B) => {
     if (!B.win || B.e - B.g < 5) return;
     const r = B.r[0];
     for (let q = 0; q < r.length; q++) {
@@ -412,7 +413,7 @@ export function buildCity({ osm, dmr, dmp, gw, gh, ext, ortho }) {
       if (inBox(x, z)) pois.push({ n: t.name, k: t.historic || t.tourism || t.amenity, p: [r2(x), r2(z), r2(ground(x, z))] });
     }
   }
-  const spawn = sq0().map(r2);
+  const spawn = (sq0() || [(P.W + P.E) / 2, (P.N + P.S) / 2]).map(r2);
 
   // ---- square furniture from OSM: the Trinity column with its saints, fountains, benches
   const memorials = feats.filter((f) => f.t === "n" && f.tags.historic === "memorial").map((f) => ({ n: f.tags.name || "", p: toXZ(f.pts[0]) }));

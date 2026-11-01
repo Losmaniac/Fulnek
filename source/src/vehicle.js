@@ -119,7 +119,7 @@ export function createVehicles({ world, city, groundAt, camera, scene, audio, fl
       if (into > 0.5 && Math.abs(st.v) > 4 && !bike) audio.thud?.();
       st.v *= 1 - 0.85 * into;
     }
-    const [W, N, E, S] = city.bounds; st.x = Math.min(Math.max(st.x, W + 3), E - 3); st.z = Math.min(Math.max(st.z, N + 3), S - 3);
+    const [W, N, E, S] = world.extent || city.bounds; st.x = Math.min(Math.max(st.x, W + 3), E - 3); st.z = Math.min(Math.max(st.z, N + 3), S - 3);
     st.roll += ((bike ? -st.steer * Math.min(1, st.v / 4) * 0.5 : st.steer * st.v * 0.012) - st.roll) * Math.min(1, dt * 5);
     st.crank += st.v * dt;
   };

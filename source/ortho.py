@@ -1,6 +1,6 @@
 """Crop the four ČÚZK ortho tiles to the game bbox and stitch them into one north-up JPEG.
 The MapServer stretched each requested extent to square degree pixels, so we crop by the true extents.
-Usage: python3 -I ortho.py <fulnek-data.bin> <out.jpg>
+Usage: python3 -I ortho.py <fulnek-data.bin> <out.jpg> [m_per_px=0.5]  (outer map tiles use 1: a quarter of the download)
 """
 import io, json, struct, sys
 from PIL import Image
@@ -12,7 +12,11 @@ TRUE = {  # extents reported by the server (f=json) for the requests in the bund
 }
 raw = open(sys.argv[1], "rb").read()
 _, hlen = struct.unpack_from("<II", raw, 0)
-files = {f["name"]: f for f in json.loads(raw[8:8 + hlen])["files"]}
+hdr = json.loads(raw[8:8 + hlen])
+files = {f["name"]: f for f in hdr["files"]}
+if "orthoExt" in hdr["meta"]:  # bundles from fetch.mjs carry their own box and the extents the server reported
+    BB = hdr["meta"]["bbox"]
+    TRUE = {k: (e["W"], e["S"], e["E"], e["N"]) for k, e in hdr["meta"]["orthoExt"].items()}
 mid = (BB["S"] + BB["N"]) / 2
 out = None
 for name, (w, s, e, n) in TRUE.items():
@@ -25,8 +29,12 @@ for name, (w, s, e, n) in TRUE.items():
     if out is None:
         out = Image.new("RGB", (2 * W, 2 * band.height))
     out.paste(band, (0 if name[1] == "w" else W, 0 if name[0] == "n" else band.height))
+full = out
+if len(sys.argv) > 3 and float(sys.argv[3]) > 0.5:
+    k = 0.5 / float(sys.argv[3])
+    out = out.resize((round(out.width * k), round(out.height * k)), Image.Resampling.LANCZOS)
 out.save(sys.argv[2], quality=86, optimize=True)
 # 2 m/px copy for the bake (vegetation and colour lookups); raw RGB, row 0 = north
-small = out.resize((1334, 1057), Image.Resampling.BOX)
+small = full.resize((1334, 1057), Image.Resampling.BOX)
 open(sys.argv[2].rsplit(".", 1)[0] + "_small.rgb", "wb").write(small.tobytes())
 print(out.size, small.size)

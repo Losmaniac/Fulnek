@@ -12,7 +12,7 @@ const DOG = [0x6b4a2f, 0x1e1b19, 0xd9c8a6, 0xa66b2c, 0xe9e5dc];
 
 function inst(geo, mat, n) { const m = new THREE.InstancedMesh(geo, mat, n); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); return m; }
 
-export function buildPeople(walk, spawn, groundAt, seats = [], count = 150) {
+export function buildPeople(walk, spawn, groundAt, seats = [], count = 150, groups = 4) { // groups: chatting groups on the square
   const [sx, sz] = spawn, R = 650; // people stay within ~650 m of the square
   const nodes = walk.map((n, i) => i).filter((i) => walk[i].out.length && Math.hypot(walk[i].x - sx, walk[i].z - sz) < R);
   const mat = new THREE.MeshLambertMaterial();
@@ -38,7 +38,7 @@ export function buildPeople(walk, spawn, groundAt, seats = [], count = 150) {
     P.push({ from, e: pick(from, -1), t: rnd() * 10, v: 1.05 + rnd() * 0.5, side: rnd() < 0.5 ? 1 : -1, jit: (rnd() - 0.5) * 0.5, s: kid ? 0.62 + rnd() * 0.12 : 0.92 + rnd() * 0.16, ph: rnd() * 6.3, yaw: 0, dog: !kid && rnd() < 0.18 });
   }
   // chatting groups of 2-3 on the square
-  for (let g = 0; g < 4; g++) {
+  for (let g = 0; g < groups; g++) {
     const cx = sx + (rnd() - 0.5) * 50, cz = sz + (rnd() - 0.5) * 50, k = 2 + Math.floor(rnd() * 2);
     for (let j = 0; j < k; j++) { const a = (j / k) * 6.283 + rnd() * 0.4; P.push({ idle: true, x: cx + Math.cos(a) * 0.65, z: cz + Math.sin(a) * 0.65, yaw: Math.atan2(Math.sin(a), -Math.cos(a)), s: 0.92 + rnd() * 0.16, ph: rnd() * 6.3, dog: false }); }
   }

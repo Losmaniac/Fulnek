@@ -1,10 +1,10 @@
 // interior self-check: enter every building from a wall and check the generated ground floor
-// node interiortest.mjs   (reads ../data/city.js)
+// node interiortest.mjs [city.js]   (default ../data/city.js; a map tile works too, e.g. dist/data/tiles/-2_-3/city.js)
 import { readFileSync } from "node:fs";
 import { createInteriors } from "./src/interior.js";
 
 globalThis.window = {};
-new Function(readFileSync(new URL("../data/city.js", import.meta.url), "utf8"))();
+new Function(readFileSync(process.argv[2] || new URL("../data/city.js", import.meta.url), "utf8"))();
 const city = window.FULNEK_CITY, I = createInteriors(city);
 const inside = (x, z, ring) => { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, zi] = ring[i], [xj, zj] = ring[j]; if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) c = !c; } return c; };
 const segDist = (px, pz, s, o) => { const ax = s[o], az = s[o + 1], vx = s[o + 2] - ax, vz = s[o + 3] - az, L = vx * vx + vz * vz || 1, t = Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / L)); return Math.hypot(px - ax - vx * t, pz - az - vz * t); };

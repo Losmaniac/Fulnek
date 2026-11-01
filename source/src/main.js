@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { buildWorld } from "./world.js";
 import { startPlay } from "./play.js";
+import { createStream } from "./stream.js";
 
 const status = document.getElementById("status");
 const say = (t) => { status.textContent = t; return new Promise((r) => setTimeout(r, 30)); }; // let the text paint
@@ -18,10 +19,15 @@ async function boot() {
   const img = new Image();
   img.src = src;
   await img.decode();
+  // the 10 km map: the tile list and the coarse landscape around them (both optional: without them it's the town alone)
+  const ov = window.FULNEK_OVERVIEW, overview = ov ? { data: ov, img: new Image() } : null;
+  if (overview) { overview.img.src = ov.photo; await overview.img.decode(); }
   await say(`Raising ${city.buildings.length.toLocaleString("cs-CZ")} buildings and planting trees`);
-  const world = buildWorld(city, img, renderer);
-  const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.25, 6000);
-  startPlay({ world, city, renderer, camera, ortho: img });
+  const world = buildWorld(city, img, renderer, overview);
+  const stream = createStream({ world, list: window.FULNEK_TILES || [] });
+  world.extent = stream.extent; // where cars may drive
+  const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.25, 16000); // far enough for the hills on the horizon
+  startPlay({ world, city, renderer, camera, ortho: img, stream, overview });
   const n = (v) => v.toLocaleString("cs-CZ");
   const c = world.counts;
   document.getElementById("facts").textContent = `${n(city.buildings.length)} buildings · ${n(c.trees)} trees · ${n(c.bushes)} bushes · ${n(c.people)} people · ${n(c.dogs)} dogs · ${n(c.cars + c.traffic)} cars`;

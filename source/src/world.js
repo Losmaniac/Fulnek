@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { terrainAt } from "./city.js";
+import { terrainAt, projection, raster } from "./city.js";
 import { decode } from "./decode.js";
 import { facadeTextures, roadTextures, groundDetail, leafTexture, rng } from "./textures.js";
 import { buildRoads, buildLamps } from "./roads.js";
@@ -142,12 +142,13 @@ function buildingsMesh(city, ftex) {
   return { mesh, segs, chimneys };
 }
 
-// 1 m/px material map over the town: R = paved/built, G = town (pavers instead of soil), B = water
+// 2 m/px material map over a map tile: R = paved/built, G = town (pavers instead of soil), B = water
+// (drawn straight at half resolution, which also softens the edges; a blur filter or a 1 m/px canvas stalls the page)
 function splatCanvas(city) {
   const [W, N, E, S] = city.bounds, c = document.createElement("canvas");
-  c.width = Math.round(E - W); c.height = Math.round(S - N);
+  c.width = Math.ceil((E - W) / 2); c.height = Math.ceil((S - N) / 2);
   const g = c.getContext("2d");
-  g.fillStyle = "#000"; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = "#000"; g.fillRect(0, 0, c.width, c.height); g.scale(0.5, 0.5); // paths and widths stay in metres
   g.globalCompositeOperation = "lighter"; g.lineCap = g.lineJoin = "round";
   const path = (pts, close) => { g.beginPath(); pts.forEach(([x, z], i) => g[i ? "lineTo" : "moveTo"](x - W, z - N)); if (close) g.closePath(); };
   g.fillStyle = g.strokeStyle = "rgb(0,255,0)"; g.lineWidth = 36;
@@ -159,26 +160,33 @@ function splatCanvas(city) {
   for (const A of city.areas) { g.fillStyle = A.s === "water" ? "rgb(0,0,255)" : "rgb(255,0,0)"; path(A.r, true); g.fill(); }
   g.fillStyle = "rgb(255,0,0)";
   for (const B of city.buildings) { path(B.r[0], true); g.fill(); }
-  const out = document.createElement("canvas"); out.width = c.width; out.height = c.height;
-  const o = out.getContext("2d"); o.filter = "blur(1.2px)"; o.drawImage(c, 0, 0);
-  return out;
+  return c;
 }
 
-function terrainMesh(city, T, ortho, splat, renderer) {
-  const [W, N, E, S] = city.bounds, n = T.w * T.h;
+// shared: a cache for map tiles, whose grids all have the same size: one index and uv buffer for all (one GPU upload, not one per tile)
+function terrainMesh(city, T, ortho, splat, renderer, shared = null) {
+  const [W, N, E, S] = city.bounds, n = T.w * T.h, key = `${T.w}x${T.h}`;
   const pos = new Float32Array(n * 3), uv = new Float32Array(n * 2), idx = new Uint32Array((T.w - 1) * (T.h - 1) * 6);
   for (let j = 0, k = 0; j < T.h; j++) for (let i = 0; i < T.w; i++, k++) {
     const x = T.x0 + i * T.dx, z = T.z0 + j * T.dz;
     pos[k * 3] = x; pos[k * 3 + 1] = T.data[k]; pos[k * 3 + 2] = z;
     uv[k * 2] = (x - W) / (E - W); uv[k * 2 + 1] = (S - z) / (S - N);
   }
-  for (let j = 0, o = 0; j < T.h - 1; j++) for (let i = 0; i < T.w - 1; i++) {
+  for (let j = 0, o = 0; j < T.h - 1; j++) for (let i = 0; i < T.w - 1; i++, o += 6) {
     const a = j * T.w + i, b = a + 1, c = a + T.w, d = c + 1; // same split as terrainAt
-    idx.set([a, c, b, b, c, d], o); o += 6;
+    idx[o] = a; idx[o + 1] = c; idx[o + 2] = b; idx[o + 3] = b; idx[o + 4] = c; idx[o + 5] = d;
+  }
+  if (shared && !shared[key]) shared[key] = { idx: new THREE.BufferAttribute(idx, 1), uv: new THREE.BufferAttribute(uv, 2) };
+  // normals straight from the height grid (central differences): a fraction of computeVertexNormals' cost on 350 k vertices
+  const nor = new Float32Array(n * 3), h = T.data;
+  for (let j = 0, k = 0; j < T.h; j++) for (let i = 0; i < T.w; i++, k++) {
+    const i0 = Math.max(i - 1, 0), i1 = Math.min(i + 1, T.w - 1), j0 = Math.max(j - 1, 0), j1 = Math.min(j + 1, T.h - 1);
+    const gx = (h[j * T.w + i1] - h[j * T.w + i0]) / ((i1 - i0) * T.dx), gz = (h[j1 * T.w + i] - h[j0 * T.w + i]) / ((j1 - j0) * T.dz), l = Math.hypot(gx, 1, gz);
+    nor[k * 3] = -gx / l; nor[k * 3 + 1] = 1 / l; nor[k * 3 + 2] = -gz / l;
   }
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1)); geo.computeVertexNormals();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("uv", shared ? shared[key].uv : new THREE.BufferAttribute(uv, 2)); geo.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  geo.setIndex(shared ? shared[key].idx : new THREE.BufferAttribute(idx, 1));
   let img = ortho;
   const max = renderer.capabilities.maxTextureSize;
   if (ortho.width > max) { // shortcut: weak GPUs get a downscaled photo
@@ -187,9 +195,10 @@ function terrainMesh(city, T, ortho, splat, renderer) {
   }
   const tex = new THREE.Texture(img);
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy(); tex.needsUpdate = true;
+  if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) tex.flipY = false; // map tiles hand over a bitmap already flipped (WebGL ignores flipY for bitmaps)
   const splatTex = new THREE.CanvasTexture(splat);
   splatTex.colorSpace = THREE.NoColorSpace;
-  const detail = groundDetail();
+  const detail = (groundDetail.cached ||= groundDetail()); // the same for every tile: made once (its readbacks stall the canvas)
   // Up close the photo (0,5-0,8 m/px) is replaced by tiled grass / soil / pavers / asphalt patterns,
   // chosen by the photo's greenness and the material map, and coloured by the blurred photo.
   const mat = new THREE.MeshLambertMaterial({ map: tex });
@@ -219,6 +228,7 @@ function terrainMesh(city, T, ortho, splat, renderer) {
   };
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
+  mesh.userData.textures = [tex, splatTex]; // freed with the map tile (the shader closure hides the splat map)
   // skirt: walls down from the map edge plus a far ground plane, so the world doesn't end in a cliff
   const low = city.hmin - 5, sp = [], ring = [];
   for (let i = 0; i < T.w; i++) ring.push([i, 0]);
@@ -261,13 +271,48 @@ function labels(city) {
 
 export const QUALITY = ["low", "medium", "high"];
 
-export function buildWorld(city, ortho, renderer) {
+// the distant landscape: the coarse overview grid with its photo, everywhere around the detailed tiles
+// (fragments inside a built tile are discarded, so the detailed ground always wins)
+function distantLand(ov, img, renderer) {
+  const P = projection(), dm = decode(ov.dm, Uint16Array), data = Float32Array.from(dm, (v) => ov.hmin + v / 10);
+  const R = raster(data, ov.w, ov.h, ov.ext, P), n = ov.w * ov.h;
+  const pos = new Float32Array(n * 3), uv = new Float32Array(n * 2), idx = new Uint32Array((ov.w - 1) * (ov.h - 1) * 6);
+  const pW = P.x(ov.photoExt.W), pE = P.x(ov.photoExt.E), pN = P.z(ov.photoExt.N), pS = P.z(ov.photoExt.S);
+  for (let k = 0; k < n; k++) { const [x, z] = R.cell(k); pos.set([x, data[k] - 0.6, z], k * 3); uv.set([(x - pW) / (pE - pW), (pS - z) / (pS - pN)], k * 2); }
+  for (let j = 0, o = 0; j < ov.h - 1; j++) for (let i = 0; i < ov.w - 1; i++) { const a = j * ov.w + i; idx.set([a, a + ov.w, a + 1, a + 1, a + ov.w, a + ov.w + 1], o); o += 6; }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3)); geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1)); geo.computeVertexNormals();
+  const tex = new THREE.Texture(img); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy(); tex.needsUpdate = true;
+  const holes = { value: Array.from({ length: 24 }, () => new THREE.Vector4(1e9, 1e9, -1e9, -1e9)) }; // built tiles [W, N, E, S]
+  const mat = new THREE.MeshLambertMaterial({ map: tex });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uHoles = holes;
+    sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vWp;").replace("#include <begin_vertex>", "#include <begin_vertex>\nvWp = position;");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nuniform vec4 uHoles[24]; varying vec3 vWp;")
+      .replace("void main() {", "void main() {\n  for (int i = 0; i < 24; i++) { vec4 h = uHoles[i]; if (vWp.x > h.x && vWp.x < h.z && vWp.z > h.y && vWp.z < h.w) discard; }");
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true; mesh.frustumCulled = false;
+  return { mesh, at: R.at, setHoles: (list) => holes.value.forEach((v, i) => (list[i] ? v.set(...list[i]) : v.set(1e9, 1e9, -1e9, -1e9))) };
+}
+
+export function buildWorld(city, ortho, renderer, overview = null) {
   const scene = new THREE.Scene();
   const cm = decode(city.terrain.cm, Uint16Array), T = { ...city.terrain, data: Float32Array.from(cm, (v) => city.hmin + v / 100) };
-  const groundAt = (x, z) => terrainAt(T, x, z);
+  // ground height anywhere: the home tile, a built map tile, or the coarse distant landscape
+  const tiles = [], home = city.bounds, inB = (b, x, z) => x >= b[0] && x <= b[2] && z >= b[1] && z <= b[3];
+  let far = null;
+  const groundAt = (x, z) => {
+    if (inB(home, x, z)) return terrainAt(T, x, z);
+    for (const t of tiles) if (t.T && inB(t.b, x, z)) return terrainAt(t.T, x, z);
+    return far ? far.at(x, z) : terrainAt(T, x, z);
+  };
   const env = createEnv(scene), sun = env.sun;
   const splat = splatCanvas(city);
-  scene.add(...terrainMesh(city, T, ortho, splat, renderer));
+  const homeGround = terrainMesh(city, T, ortho, splat, renderer);
+  if (overview) { far = distantLand(overview.data, overview.img, renderer); scene.add(homeGround[0], homeGround[1], far.mesh); } // the overview replaces the flat far plane
+  else scene.add(...homeGround);
   const ftex = facadeTextures(renderer), rtex = roadTextures(renderer), leaves = leafTexture(renderer, [11, 0, 1, 2].includes(new Date().getMonth()) ? "bare" : false), autumn = leafTexture(renderer, true); // broadleaf trees are bare in winter
   const { mesh, segs, chimneys } = buildingsMesh(city, ftex), smoke = buildSmoke(chimneys);
   scene.add(smoke.mesh);
@@ -292,8 +337,83 @@ export function buildWorld(city, ortho, renderer) {
   };
   setQuality(quality);
 
-  const segAll = Float32Array.from([...segs, ...cars.segs, ...props.segs]);
+  let segAll = Float32Array.from([...segs, ...cars.segs, ...props.segs]);
+  const homeSegs = segAll.length;
   cars.parked.bind(segAll, segs.length);
+
+  // ---- map tiles: built step by step (addTile is a generator: each next() is one frame's worth), freed by removeTile
+  const shared = new Set([...Object.values(ftex), ...Object.values(rtex), leaves, autumn].filter((t) => t?.isTexture));
+  const resegment = () => { // wall segments: the home part first (parked cars write into it), then each built tile
+    const next = new Float32Array(homeSegs + tiles.reduce((s, t) => s + (t.segs?.length || 0), 0));
+    next.set(segAll.subarray(0, homeSegs)); let o = homeSegs;
+    for (const t of tiles) if (t.segs) { next.set(t.segs, o); o += t.segs.length; }
+    segAll = next; cars.parked.bind(segAll, segs.length); api.segs = segAll; api.segsVersion++;
+    let off = homeSegs / 5; api.segParts = tiles.filter((t) => t.segs).map((t) => { const p = { arr: t.segs, off }; off += t.segs.length / 5; return p; }); // for per-part wall hashes
+  };
+  const holes = () => far?.setHoles([home, ...tiles.filter((t) => t.T).map((t) => t.b)]);
+  const tileGrid = {}; // shared terrain index/uv buffers (see terrainMesh)
+  function* addTile(id, tc, img, photo = img) { // img: for the maps; photo: the same picture for the GPU (a flipped ImageBitmap uploads fastest)
+    const t = { id, b: tc.bounds, img, city: tc, meshes: [], updates: [], live: [], chimneys: [], wet: [], agents: [] }; // img: for the maps; city: for interiors
+    tiles.push(t);
+    // an instanced mesh with room for nothing (no traffic, no people here) is left out: without instance colours it's a shader variant of its own, compiled on first sight
+    const add = (...m) => { for (const x of m) if (!(x.isInstancedMesh && x.instanceMatrix.count === 0)) { scene.add(x); t.meshes.push(x); } };
+    const tcm = decode(tc.terrain.cm, Uint16Array), TT = { ...tc.terrain, data: Float32Array.from(tcm, (v) => tc.hmin + v / 100) };
+    const sp = splatCanvas(tc);
+    yield;
+    const ground = terrainMesh(tc, TT, photo, sp, renderer, tileGrid);
+    ground[0].userData.sharedGrid = true;
+    yield;
+    for (const tx of ground[0].userData.textures) renderer.initTexture(tx); // upload the photo now, in its own step, not in the frame that first draws it
+    yield;
+    add(ground[0], ground[1]); t.T = TT; holes(); // the skirt hides cracks against neighbours; no far plane
+    yield;
+    const far0 = { ...tc, spawn: [1e9, 1e9] }, segsT = [], CH = 250; // town-square facades belong to Fulnek only
+    for (let i = 0; i < tc.buildings.length; i += CH) {
+      const b = buildingsMesh({ ...far0, buildings: tc.buildings.slice(i, i + CH) }, ftex);
+      add(b.mesh); segsT.push(...b.segs); for (const c of b.chimneys) { chimneys.push(c); t.chimneys.push(c); }
+      yield;
+    }
+    const rd = buildRoads(tc, groundAt, rtex);
+    add(...rd.meshes); for (const m of rd.wetMaterials) { roads.wetMaterials.push(m); t.wet.push(m); }
+    yield;
+    const lm = buildLamps(tc, groundAt);
+    add(...lm.meshes); t.updates.push((dt, cam, player, night) => lm.update(night));
+    yield;
+    const tr = buildTrees(tc, leaves, autumn);
+    add(...tr.meshes); t.updates.push((dt, cam) => tr.update(cam));
+    yield;
+    const bu = buildBushes(tc, leaves);
+    add(...bu.meshes); t.updates.push((dt, cam) => bu.update(cam));
+    yield;
+    const pr = buildProps(tc, groundAt), bo = buildSigns(tc), dr = buildDoors(tc), lb = labels(tc);
+    add(...pr.meshes, ...bo.meshes, ...dr.meshes, ...lb);
+    t.updates.push((dt, cam, player, night, time) => { bo.update(night); pr.update(time); for (const s of lb) s.visible = s.position.distanceToSquared(cam) < 380 * 380; });
+    yield;
+    const cs = buildCars(tc, rd.graph, groundAt), pp = buildPeople(rd.walk, tc.spawn, groundAt, pr.seats, Math.min(150, Math.round(rd.walk.length / 6)), 0); // as many people as the footways carry; no square
+    add(...cs.meshes, ...pp.meshes);
+    for (const a of cs.agentPos) { cars.agentPos.push(a); t.agents.push(a); } // everyone collides with this tile's traffic too
+    // street life only while you're near: traffic and people stand still (and cost nothing) further away
+    t.live.push((dt, player, night) => { cs.update(dt, player, night); pp.update(dt, player, { night, rain: Math.min(1, env.st.rain + env.st.snow * 0.4) }); });
+    t.segs = Float32Array.from([...segsT, ...cs.segs, ...pr.segs]);
+    resegment();
+    t.done = true;
+  }
+  const removeTile = (id) => {
+    const i = tiles.findIndex((t) => t.id === id); if (i < 0) return;
+    const [t] = tiles.splice(i, 1);
+    for (const m of t.meshes) {
+      scene.remove(m);
+      m.traverse?.((o) => {
+        if (o.userData.sharedGrid) { o.geometry.setIndex(null); o.geometry.deleteAttribute("uv"); } // other tiles still draw with these
+        o.geometry?.dispose();
+        for (const mat of [].concat(o.material || [])) { for (const k of ["map", "emissiveMap"]) if (mat[k] && !shared.has(mat[k])) mat[k].dispose(); mat.dispose(); }
+        for (const tx of o.userData.textures || []) tx.dispose();
+      });
+    }
+    const drop = (arr, gone) => { for (let k = arr.length - 1; k >= 0; k--) if (gone.includes(arr[k])) arr.splice(k, 1); };
+    drop(chimneys, t.chimneys); drop(roads.wetMaterials, t.wet); drop(cars.agentPos, t.agents);
+    holes(); if (t.segs) resegment();
+  };
   const update = (dt, cam, player, t) => {
     env.update(dt, cam, t);
     const snap = 280 / sun.shadow.mapSize.x; // move the shadow box in whole texels to stop shimmering
@@ -308,9 +428,16 @@ export function buildWorld(city, ortho, renderer) {
     if (quality !== "low") { grass.mesh.visible = cam.y - groundAt(cam.x, cam.z) < 40 && uniforms.uSnow.value < 0.5; if (grass.mesh.visible) grass.update(cam); }
     cars.update(dt, player, night); people.update(dt, player, { night, rain: Math.min(1, env.st.rain + env.st.snow * 0.4) }); fauna.update(dt, player, t); boards.update(night); props.update(t);
     for (const s of signs) s.visible = s.position.distanceToSquared(cam) < 380 * 380;
+    for (const tl of tiles) {
+      for (const u of tl.updates) u(dt, cam, player, night, t);
+      if (tl.done && Math.max(tl.b[0] - player.x, 0, player.x - tl.b[2]) + Math.max(tl.b[1] - player.z, 0, player.z - tl.b[3]) < 900) for (const u of tl.live) u(dt, player, night);
+    }
   };
-  return {
-    scene, groundAt, segs: segAll, update, T, setQuality, quality: () => quality, env, cars, people, chimneys, smoke,
+  const api = {
+    scene, groundAt, segs: segAll, segsVersion: 0, homeSegs, segParts: [], update, T, setQuality, quality: () => quality, env, cars, people, chimneys, smoke,
+    addTile, removeTile, tiles, homeBounds: home,
     counts: { trees: trees.count, bushes: bushes.count, cars: cars.count, traffic: cars.traffic, people: people.count, dogs: people.dogs, lamps: city.lamps ? decode(city.lamps, Int16Array).length / 3 : 0 },
   };
+  holes();
+  return api;
 }

@@ -15,9 +15,9 @@ const EYE = 1.7, R = 0.35, CELL = 8;
 const fmt = (n, d = 0) => n.toLocaleString("cs-CZ", { minimumFractionDigits: d, maximumFractionDigits: d });
 const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
-function hashSegments(segs, stride, cell) { // spatial hash: cell -> segment indices
+function hashSegments(segs, stride, cell, count = segs.length / stride) { // spatial hash: cell -> segment indices (the first count)
   const grid = new Map(), key = (i, j) => (i + 4096) * 8192 + (j + 4096);
-  for (let s = 0; s < segs.length / stride; s++) {
+  for (let s = 0; s < count; s++) {
     const o = s * stride, i0 = Math.floor(Math.min(segs[o], segs[o + 2]) / cell), i1 = Math.floor(Math.max(segs[o], segs[o + 2]) / cell);
     const j0 = Math.floor(Math.min(segs[o + 1], segs[o + 3]) / cell), j1 = Math.floor(Math.max(segs[o + 1], segs[o + 3]) / cell);
     for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) { const k = key(i, j); (grid.get(k) || grid.set(k, []).get(k)).push(s); }
@@ -26,11 +26,22 @@ function hashSegments(segs, stride, cell) { // spatial hash: cell -> segment ind
 }
 const closest = (px, pz, ax, az, bx, bz) => { const vx = bx - ax, vz = bz - az, L = vx * vx + vz * vz || 1; const t = Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / L)); return [ax + t * vx, az + t * vz]; };
 
-export function startPlay({ world, city, renderer, camera, ortho }) {
+export function startPlay({ world, city, renderer, camera, ortho, stream = null, overview = null }) {
   const $ = (id) => document.getElementById(id);
-  const [W, N, E, S] = city.bounds, P = projection();
-  const { groundAt, segs } = world;
-  let nearWalls = hashSegments(segs, 5, CELL);
+  // W..S: the playable area (all map tiles); hW..hS: the home tile (Fulnek), whose detailed map, streets and doors the maps draw
+  const [W, N, E, S] = stream ? stream.extent : city.bounds, [hW, hN, hE, hS] = city.bounds, P = projection();
+  const { groundAt } = world;
+  let segs = world.segs, segsV = world.segsVersion, nearWalls = null;
+  // walls: Fulnek's part is re-hashed when a parked car moves; each map tile's part is hashed once, when it's built
+  const tileHash = new WeakMap();
+  let homeWalls = null;
+  const compose = () => {
+    const parts = [[homeWalls, 0]];
+    for (const p of world.segParts || []) { if (!tileHash.has(p.arr)) tileHash.set(p.arr, hashSegments(p.arr, 5, CELL)); parts.push([tileHash.get(p.arr), p.off]); }
+    nearWalls = parts.length === 1 ? homeWalls : (x, z, fn) => { for (const [h, off] of parts) h(x, z, off ? (s) => fn(s + off) : fn); };
+  };
+  const rewall = () => { segs = world.segs; homeWalls = hashSegments(segs, 5, CELL, (world.homeSegs ?? segs.length) / 5); compose(); };
+  rewall();
   const named = [], namedIdx = [];
   city.roads.forEach((r, ri) => { if (r.n) for (let i = 0; i + 1 < r.p.length; i++) { named.push(r.p[i][0], r.p[i][1], r.p[i + 1][0], r.p[i + 1][1]); namedIdx.push(ri); } });
   const nearRoads = hashSegments(named, 4, 20);
@@ -81,7 +92,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     if (code === "KeyP" && playing) { phone.toggle(); return true; }
     if (code === "KeyE" && playing && !driving && !room && talk.start(pos)) return true;
     if (code === "KeyE" && playing && !room) {
-      if (driving) { const was = veh.st.mode; if (veh.exit(pos)) { yaw = veh.st.yaw - Math.PI / 2; pitch = 0; nearWalls = hashSegments(segs, 5, CELL); toast(was === "car" ? "Parked" : "Bike left here", "E to get back on"); } else toast("Too fast", "Stop first, then E"); }
+      if (driving) { const was = veh.st.mode; if (veh.exit(pos)) { yaw = veh.st.yaw - Math.PI / 2; pitch = 0; rewall(); toast(was === "car" ? "Parked" : "Bike left here", "E to get back on"); } else toast("Too fast", "Stop first, then E"); }
       else { if (fly && flightModel) world.scene.remove(flightModel.group); flightModel = null; fly = false; const m = veh.enter(pos); if (m) { orbit.yaw = orbit.pitch = 0; if (m === "car") crime.carjacked(); if (m === "service") toast(veh.st.svc.name, "W/S · A/D steer · L blue lights and siren · C camera · E get out"); else toast(m === "car" ? "Driving" : "Cycling", m === "car" ? "W/S throttle and brake · A/D steer · Space handbrake · C camera · H horn · E get out" : "W pedal · S brake · A/D steer · E get off"); } else if (onGround) { const e = interiors.near(pos, yaw); if (e) goIn(e); } }
       return true;
     }
@@ -161,7 +172,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
 
   // ---- maps: ortho at 2 m/px with streets drawn over it
   const mc = document.createElement("canvas");
-  mc.width = Math.round((E - W) / 2); mc.height = Math.round((S - N) / 2);
+  mc.width = Math.round((hE - hW) / 2); mc.height = Math.round((hS - hN) / 2);
   const mg = mc.getContext("2d");
   mg.drawImage(ortho, 0, 0, mc.width, mc.height);
   mg.lineCap = mg.lineJoin = "round";
@@ -169,14 +180,24 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   for (const r of city.roads) {
     mg.strokeStyle = r.k === "stream" ? "rgba(120,190,230,0.8)" : r.k === "rail" ? "rgba(40,40,40,0.7)" : major.has(r.k) ? "rgba(255,236,190,0.85)" : "rgba(255,255,255,0.55)";
     mg.lineWidth = major.has(r.k) ? 3 : minor.has(r.k) || r.k === "rail" ? 2 : 1;
-    mg.beginPath(); r.p.forEach(([x, z], i) => mg[i ? "lineTo" : "moveTo"]((x - W) / 2, (z - N) / 2)); mg.stroke();
+    mg.beginPath(); r.p.forEach(([x, z], i) => mg[i ? "lineTo" : "moveTo"]((x - hW) / 2, (z - hN) / 2)); mg.stroke();
   }
   const mini = $("minimap"), mx = mini.getContext("2d");
   const arrow = (g, x, y, a, s) => { g.save(); g.translate(x, y); g.rotate(a); g.beginPath(); g.moveTo(0, -s); g.lineTo(s * 0.62, s * 0.7); g.lineTo(0, s * 0.35); g.lineTo(-s * 0.62, s * 0.7); g.closePath(); g.fillStyle = "#e0a43a"; g.strokeStyle = "#14181a"; g.lineWidth = 2; g.fill(); g.stroke(); g.restore(); };
+  // photo layers for the maps, coarse to fine: the whole area, built map tiles, Fulnek with its streets drawn in
+  const ovB = overview ? [P.x(overview.data.photoExt.W), P.z(overview.data.photoExt.N), P.x(overview.data.photoExt.E), P.z(overview.data.photoExt.S)] : null;
+  const layers = (home) => [...(ovB ? [[overview.img, ovB]] : []), ...world.tiles.filter((t) => t.img && t.done).map((t) => [t.img, t.b]), [home, [hW, hN, hE, hS]]];
+  // draw the part of img (covering box b in metres) that falls inside the view [vx0, vz0, vx1, vz1] onto g, k canvas px per metre
+  const blit = (g, img, b, v, k) => {
+    const x0 = Math.max(b[0], v[0]), z0 = Math.max(b[1], v[1]), x1 = Math.min(b[2], v[2]), z1 = Math.min(b[3], v[3]);
+    if (x1 <= x0 || z1 <= z0) return;
+    const sx = img.width / (b[2] - b[0]), sz = img.height / (b[3] - b[1]);
+    g.drawImage(img, (x0 - b[0]) * sx, (z0 - b[1]) * sz, (x1 - x0) * sx, (z1 - z0) * sz, (x0 - v[0]) * k, (z0 - v[1]) * k, (x1 - x0) * k, (z1 - z0) * k);
+  };
   const drawMini = () => {
-    const s = mini.width, px = (pos.x - W) / 2, pz = (pos.z - N) / 2, span = 120; // 240 m across
+    const s = mini.width, span = 240, v = [pos.x - span / 2, pos.z - span / 2, pos.x + span / 2, pos.z + span / 2]; // 240 m across
     mx.fillStyle = "#3b4430"; mx.fillRect(0, 0, s, s);
-    mx.drawImage(mc, px - span / 2, pz - span / 2, span, span, 0, 0, s, s);
+    for (const [img, b] of layers(mc)) blit(mx, img, b, v, s / span);
     if (target) { // the waypoint: a pin inside the minimap, or an arrow on its rim pointing the way
       const k = s / (span * 2), dx = (target.x - pos.x) * k, dz = (target.z - pos.z) * k, r = s / 2 - 14, d = Math.hypot(dx, dz);
       const [x, y] = d < r ? [s / 2 + dx, s / 2 + dz] : [s / 2 + (dx / d) * r, s / 2 + (dz / d) * r];
@@ -189,6 +210,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   const big = $("bigcanvas"), bg = big.getContext("2d");
   // big map: the full-resolution photo with crisp streets, buildings and names drawn on top; wheel zooms, drag pans
   const view = { zoom: 1, cx: (W + E) / 2, cz: (N + S) / 2 }; // metres
+  const ZMAX = 16 * Math.max(1, (E - W) / (hE - hW)); // deep enough to read Fulnek's house numbers on the whole-area map
   let mpp = 1; // metres per canvas pixel at the current zoom
   const drawBig = () => {
     const dpr = devicePixelRatio, cw = innerWidth * 0.94, ch = innerHeight * 0.84;
@@ -200,9 +222,10 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     if (hh * 2 > S - N) view.cz = (N + S) / 2;
     const X = (x) => (x - view.cx + hw) / mpp, Z = (z) => (z - view.cz + hh) / mpp;
     bg.fillStyle = "#20261f"; bg.fillRect(0, 0, big.width, big.height);
-    bg.drawImage(ortho, 0, 0, ortho.width, ortho.height, X(W), Z(N), (E - W) / mpp, (S - N) / mpp);
+    for (const [img, b] of layers(ortho)) blit(bg, img, b, [view.cx - hw, view.cz - hh, view.cx + hw, view.cz + hh], 1 / mpp);
     bg.lineCap = bg.lineJoin = "round";
-    if (view.zoom >= 2) { // building outlines
+    const zk = Math.max((hE - hW) / big.width, (hS - hN) / big.height) / mpp; // zoom relative to Fulnek filling the map: detail thresholds keep their old feel
+    if (zk >= 2) { // building outlines
       bg.strokeStyle = "rgba(255,255,255,0.35)"; bg.lineWidth = dpr;
       for (const B of city.buildings) { const r = B.r[0]; bg.beginPath(); r.forEach(([x, z], i) => bg[i ? "lineTo" : "moveTo"](X(x), Z(z))); bg.closePath(); bg.stroke(); }
     }
@@ -212,7 +235,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
       bg.beginPath(); r.p.forEach(([x, z], i) => bg[i ? "lineTo" : "moveTo"](X(x), Z(z))); bg.stroke();
     }
     const label = (text, x, y, size, color = "#f3ead2") => { bg.font = `600 ${size * dpr}px 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif`; bg.lineWidth = 3 * dpr; bg.strokeStyle = "rgba(20,24,26,0.85)"; bg.strokeText(text, x, y); bg.fillStyle = color; bg.fillText(text, x, y); };
-    if (view.zoom >= 3) { // street names once per street, at the middle of its longest piece
+    if (zk >= 3) { // street names once per street, at the middle of its longest piece
       const done = new Set();
       for (const r of city.roads.filter((r) => r.n).sort((a, b) => b.p.length - a.p.length)) {
         if (done.has(r.n)) continue; done.add(r.n);
@@ -221,13 +244,13 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
       }
     }
     for (const sp of spots) { // found places in ochre with their names, the rest as hollow rings to go and find
-      if (!sp.real && view.zoom < 3) continue;
+      if (!sp.real && zk < 3) continue;
       const x = X(sp.x), y = Z(sp.z), got = found.has(sp.n), r = 4 * dpr;
       bg.beginPath(); bg.arc(x, y, r, 0, 7);
       if (got || !sp.real) { bg.fillStyle = sp.real ? "#e0a43a" : "#8fb3d9"; bg.fill(); } else { bg.lineWidth = 2 * dpr; bg.strokeStyle = "#f3ead2"; bg.stroke(); }
-      if (got || !sp.real || view.zoom >= 4 || ["castle", "place_of_worship", "museum"].includes(sp.k)) label(sp.n, x + 7 * dpr, y + 4 * dpr, 12);
+      if (got || !sp.real || zk >= 4 || ["castle", "place_of_worship", "museum"].includes(sp.k)) label(sp.n, x + 7 * dpr, y + 4 * dpr, 12);
     }
-    if (view.zoom >= 6) { // house numbers, for finding a front door
+    if (zk >= 6) { // house numbers, for finding a front door
       bg.textAlign = "center";
       for (const d of city.doors || []) { const x = X(d[0]), y = Z(d[1]); if (x > -20 && y > -20 && x < big.width + 20 && y < big.height + 20) label(String(d[3]), x, y, 10, "#ffd2c8"); }
       bg.textAlign = "left";
@@ -243,7 +266,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   const toWorld = (e) => { const r = big.getBoundingClientRect(), k = big.width / r.width; return [view.cx + ((e.clientX - r.left) * k - big.width / 2) * mpp, view.cz + ((e.clientY - r.top) * k - big.height / 2) * mpp]; };
   const zoomAt = (e, f) => { // keep the point under the cursor where it is
     const [wx, wz] = toWorld(e), z0 = view.zoom;
-    view.zoom = Math.min(16, Math.max(1, view.zoom * f));
+    view.zoom = Math.min(ZMAX, Math.max(1, view.zoom * f));
     const k = z0 / view.zoom; view.cx = wx + (view.cx - wx) * k; view.cz = wz + (view.cz - wz) * k;
     drawBig();
   };
@@ -261,9 +284,9 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     if (!d || d.moved) return;
     const [x, z] = toWorld(e); teleport(x, z); play();
   });
-  for (const [id, f] of [["mapin", 1.6], ["mapout", 0.625]]) $(id).addEventListener("click", () => { view.zoom = Math.min(16, Math.max(1, view.zoom * f)); drawBig(); });
+  for (const [id, f] of [["mapin", 1.6], ["mapout", 0.625]]) $(id).addEventListener("click", () => { view.zoom = Math.min(ZMAX, Math.max(1, view.zoom * f)); drawBig(); });
   $("closemap").addEventListener("click", play);
-  const teleport = (x, z, y) => { if (room) { room.dispose(); room = null; } if (veh && veh.st.mode !== "walk") { veh.st.v = 0; veh.exit(pos); nearWalls = hashSegments(segs, 5, CELL); } pos.set(Math.min(Math.max(x, W + 3), E - 3), 0, Math.min(Math.max(z, N + 3), S - 3)); pos.y = y ?? groundAt(pos.x, pos.z); vel.set(0, 0, 0); };
+  const teleport = (x, z, y) => { if (room) { room.dispose(); room = null; } if (veh && veh.st.mode !== "walk") { veh.st.v = 0; veh.exit(pos); rewall(); } pos.set(Math.min(Math.max(x, W + 3), E - 3), 0, Math.min(Math.max(z, N + 3), S - 3)); pos.y = y ?? groundAt(pos.x, pos.z); vel.set(0, 0, 0); };
 
   // ---- simulation
   const collide = () => {
@@ -329,7 +352,19 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   const fleet = createFleet({ city, scene: world.scene, groundAt, agentPos: world.cars.agentPos, parked: world.cars.parked });
   const post = createPost({ renderer, world, camera });
   // ---- inside buildings: the room replaces the town on screen and in collisions while you're in it
-  const interiors = createInteriors(city);
+  // every house can be entered: Fulnek's, and those of the built map tile you're standing in (made when you first need them)
+  const homeRooms = createInteriors(city), tileRooms = new WeakMap();
+  const interiors = {
+    near: (p, y) => {
+      const e = homeRooms.near(p, y); if (e) return { e, by: homeRooms };
+      for (const t of world.tiles) if (t.done && p.x >= t.b[0] - 3 && p.x <= t.b[2] + 3 && p.z >= t.b[1] - 3 && p.z <= t.b[3] + 3) {
+        if (!tileRooms.has(t)) tileRooms.set(t, createInteriors(t.city));
+        const x = tileRooms.get(t).near(p, y); if (x) return { e: x, by: tileRooms.get(t) };
+      }
+      return null;
+    },
+    build: (n) => n.by.build(n.e),
+  };
   const atDoor = () => room && Math.hypot(pos.x - room.start.x, pos.z - room.start.z) < 1.3;
   const goIn = (e) => { room = interiors.build(e); room.near = hashSegments(room.segs, 5, CELL); pos.set(room.start.x, room.y, room.start.z); vel.set(0, 0, 0); yaw = room.yawIn; pitch = 0; toast("Inside", "E at the door to go back out"); };
   const goOut = () => { const r = room; room = null; r.dispose(); pos.set(r.out.x, groundAt(r.out.x, r.out.z), r.out.z); vel.set(0, 0, 0); yaw = r.yawOut; pitch = 0; };
@@ -343,7 +378,7 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
     wantedEl: $("wanted"), weaponEl: $("weapon"), toast, audio,
     onArrest: () => {
       const x = station ? station.x + 5 : city.spawn[0], z = station ? station.z + 5 : city.spawn[1];
-      teleport(x, z); nearWalls = hashSegments(segs, 5, CELL); errands.fine(250);
+      teleport(x, z); rewall(); errands.fine(250);
     },
   });
   services = createServices({ city, world, scene: world.scene, camera, renderer, veh, fleet, errands, toast, setTarget, audio });
@@ -412,6 +447,8 @@ export function startPlay({ world, city, renderer, camera, ortho }) {
   const frame = (now) => {
     const raw = now - last, dt = Math.max(0, Math.min(raw / 1000, 0.05)); last = now; // rAF can report a time before startPlay
     const playing = overlay.hidden && map.hidden;
+    stream?.update(pos); // map tiles near you load and build a little each frame
+    if (world.segsVersion !== segsV) { segsV = world.segsVersion; segs = world.segs; compose(); } // a tile came or went: same home indices, new parts
     if (playing) { const ox = pos.x, oz = pos.z; step(dt); if (!fly) dist[veh.st.mode] += Math.min(50, Math.hypot(pos.x - ox, pos.z - oz)); }
     if (playing && firing) fire();
     if (playing) crime.update(dt, pos, yaw, fly ? "fly" : veh.st.mode, nearWalls, segs, veh.st.mode === "car" ? veh.st : null, world.cars.agentPos);
