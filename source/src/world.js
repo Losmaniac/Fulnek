@@ -428,10 +428,10 @@ export function buildWorld(city, ortho, renderer, overview = null) {
     if (quality !== "low") { grass.mesh.visible = cam.y - groundAt(cam.x, cam.z) < 40 && uniforms.uSnow.value < 0.5; if (grass.mesh.visible) grass.update(cam); }
     cars.update(dt, player, night); people.update(dt, player, { night, rain: Math.min(1, env.st.rain + env.st.snow * 0.4) }); fauna.update(dt, player, t); boards.update(night); props.update(t);
     for (const s of signs) s.visible = s.position.distanceToSquared(cam) < 380 * 380;
-    for (const tl of tiles) {
+    for (const tl of tiles) try {
       for (const u of tl.updates) u(dt, cam, player, night, t);
       if (tl.done && Math.max(tl.b[0] - player.x, 0, player.x - tl.b[2]) + Math.max(tl.b[1] - player.z, 0, player.z - tl.b[3]) < 900) for (const u of tl.live) u(dt, player, night);
-    }
+    } catch (e) { console.error(`map tile ${tl.id} stopped moving:`, e); tl.updates.length = tl.live.length = 0; } // one tile's data quirk must not stop the whole game
   };
   const api = {
     scene, groundAt, segs: segAll, segsVersion: 0, homeSegs, segParts: [], update, T, setQuality, quality: () => quality, env, cars, people, chimneys, smoke,

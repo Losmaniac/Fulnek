@@ -42,7 +42,8 @@ check("tile building walls push the walker off", r.pushed > 0.25, `(moved ${r.pu
 // 2) unload, then let the streamer bring it back when you walk over to it
 const r2 = await page.evaluate(async () => {
   const f = window.__fulnek, w = f.world, wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
-  w.removeTile("1_0"); const afterRemove = { tiles: w.tiles.length, parts: w.segParts.length };
+  const parts0 = w.segParts.length; w.removeTile("1_0"); // the streamer may have loaded other neighbours meanwhile: count only 1_0
+  const afterRemove = { gone: !w.tiles.some((t) => t.id === "1_0"), partsDropped: parts0 - w.segParts.length };
   // the streamer's own copy of 1_0 is still "out", so walking there must load it
   f.pose(1500, 0, -Math.PI / 2, 0, undefined, false);
   for (let k = 0; k < 120 && !w.tiles.some((t) => t.id === "1_0" && t.done); k++) await wait(1000);
@@ -52,7 +53,7 @@ const r2 = await page.evaluate(async () => {
   for (let k = 0; k < 30 && w.tiles.some((t) => t.id === "1_0"); k++) await wait(1000);
   return { afterRemove, streamed, freed: !w.tiles.some((t) => t.id === "1_0"), ground: w.groundAt(-9000, 9000) };
 });
-check("unload removes the tile and its walls", r2.afterRemove.tiles === 0 && r2.afterRemove.parts === 0, JSON.stringify(r2.afterRemove));
+check("unload removes the tile and its walls", r2.afterRemove.gone && r2.afterRemove.partsDropped === 1, JSON.stringify(r2.afterRemove));
 check("streamer loads the tile you walk to", r2.streamed);
 check("streamer frees it once you're far away", r2.freed);
 check("ground exists outside every tile (distant landscape)", Number.isFinite(r2.ground) && r2.ground > 150, `(${r2.ground?.toFixed?.(1)} m)`);

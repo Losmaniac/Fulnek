@@ -104,7 +104,8 @@ export function buildCars(city, graph, groundAt) {
   };
   const fleets = [
     { n: TRAFFIC, meshes: pair(geo, TRAFFIC), paint: (i) => PAINT[(i * 104729) % PAINT.length], speed: 1, half: 2.2, width: 0.9, vary: true },
-    { n: 2, meshes: pair(busGeometries(), 2), paint: (i) => [0xf1f1ec, 0xd8b42c][i], speed: 0.72, half: 5.9, width: 1.25, vary: false },
+    { n: nodes.length ? 2 : 0, meshes: pair(busGeometries(), nodes.length ? 2 : 0), // no roads here (a map tile of fields): no buses
+      paint: (i) => [0xf1f1ec, 0xd8b42c][i], speed: 0.72, half: 5.9, width: 1.25, vary: false },
   ];
   const lights = headlights(TRAFFIC + 2);
   for (const f of fleets) {
@@ -152,6 +153,7 @@ export function buildCars(city, graph, groundAt) {
       a.t += a.v * dt;
       while (a.t >= L) {
         a.t -= L; const prev = a.from; a.from = a.e.to; a.e = pick(a.from, prev);
+        if (!a.e) { a.from = graph.indexOf(nodes[Math.floor(rnd() * nodes.length)]); a.e = pick(a.from, -1); a.t = 0; a.yaw = null; } // a one-way street off the map edge: drive on elsewhere
         A = graph[a.from]; B = graph[a.e.to]; dx = B.x - A.x; dz = B.z - A.z; L = Math.hypot(dx, dz) || 0.01;
       }
       const u = a.t / L, ux = dx / L, uz = dz / L, target = Math.atan2(-uz, ux);
